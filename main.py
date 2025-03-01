@@ -21,11 +21,9 @@ class Gene:
         # 为None的参数生成随机默认值（需满足容量约束）
         if classroom_code is None:
             # 筛选符合类型且容量足够的教室
+            # 随机选择符合类型的教室（不检查容量）
             valid_classrooms = [c for c in classrooms
-                              if c['type'] == classroom_type
-                              and c['capacity'] >= class_size]
-            if not valid_classrooms:
-                raise ValueError(f"No available {classroom_type} classroom with capacity ≥ {class_size}")
+                              if c['type'] == classroom_type]
             classroom_code = random.choice(valid_classrooms)['id']
             
         if weekday is None:
@@ -54,12 +52,10 @@ class Gene:
         self.start_section = start_section  # 开始节次
         
     def mutate(self):
-        """随机改变基因的教室、星期和开始节次（需满足容量约束）"""
+        """随机改变基因的教室、星期和开始节次"""
+        # 随机选择符合类型的教室（不检查容量）
         valid_classrooms = [c for c in classrooms
-                          if c['type'] == self.classroom_type
-                          and c['capacity'] >= self.class_size]
-        if not valid_classrooms:
-            raise ValueError(f"No available {self.classroom_type} classroom with capacity ≥ {self.class_size}")
+                          if c['type'] == self.classroom_type]
         self.classroom_code = random.choice(valid_classrooms)['id']
         self.weekday = random.randint(1, 7)
         if self.duration_sections == 2:
@@ -232,49 +228,83 @@ class Population:
 
 
 
-classrooms = [
-    {'id': 'JXL5#517', 'type': '多媒体教室', 'capacity': 100},
-    {'id': 'JYYS2#203', 'type': '虚拟仿真实训室', 'capacity': 80},
-    {'id': 'QCGCZX3-305', 'type': '多媒体教室', 'capacity': 50},
-    {'id': 'JDGCZX105', 'type': '多媒体教室', 'capacity': 50},
-    {'id': 'XXJSZX304', 'type': '机房', 'capacity': 50},
-    {'id': 'ZHL3-302', 'type': '多媒体教室', 'capacity': 50},
-    {'id': 'JYYS2#205', 'type': '玩具实训室', 'capacity': 50},
-    {'id': 'QCGCZX3-309', 'type': '智能网联实训室', 'capacity': 50},
-    {'id': 'JXL4#415', 'type': '乐理实训室', 'capacity': 50},
-    {'id': 'JYYS1#101', 'type': '舞蹈教室', 'capacity': 50}
-]
-#capacity字段表示教室可以容纳的学生数量
+import pandas as pd
 
-teachers = [
-    {'id': '0130', 'name': '曹立汶'},
-    {'id': '0681', 'name': '郭科伟'},
-    {'id': '0372', 'name': '赵亚丽'},
-    {'id': '0381', 'name': '王晶晶'},
-    {'id': '0761', 'name': '孟凯凯'},
-    {'id': '0481', 'name': '孟怀洲'},
-    {'id': '0586', 'name': '张丰'},
-    {'id': '0611', 'name': '李来徽'},
-    {'id': '0582', 'name': '彭廷海'},
-    {'id': '0166', 'name': '赵银芳'}
-]
-
-tasks = [
-    {
-        'course_code': '570102KBOB03',
-        'teacher_id': '0130',
-        'class_code': '570102KBOB032024202511017',
-        'priority': 6,
-        'class_size': 31,
-        'week_start': 10,
-        'week_end': 18,
-        'duration_sections': 2,
-        'classroom_type': '多媒体教室',
-        'classroom_code': None,
-        'weekday': None,
-        'start_section': None
+# 从Excel文件读取教室信息
+classrooms_df = pd.read_excel('教室信息.xlsx', engine='openpyxl')
+classrooms = classrooms_df[['教室编号', '教室类型', '最大上课容纳人数']].rename(
+    columns={
+        '教室编号': 'id',
+        '教室类型': 'type',
+        '最大上课容纳人数': 'capacity'
     }
-]
+).to_dict('records')
+
+# 确保数据格式正确
+for room in classrooms:
+    room['capacity'] = int(room['capacity'])
+    if not all(key in room for key in ('id', 'type', 'capacity')):
+        raise ValueError("教室信息.xlsx 文件格式错误，必须包含：教室编号、教室类型、最大上课容纳人数")
+
+# 从Excel文件读取教师信息
+teachers_df = pd.read_excel('教师信息.xlsx', engine='openpyxl')
+teachers = teachers_df[['工号', '姓名']].rename(
+    columns={
+        '工号': 'id',
+        '姓名': 'name'
+    }
+).to_dict('records')
+
+# 从排课任务.xlsx读取任务数据
+tasks_df = pd.read_excel('排课任务.xlsx', engine='openpyxl')
+
+def parse_schedule(schedule_str, duration_sections):
+    """解析多时间段开课周次格式（示例：'5-8:6,13-16:2'）
+    返回元组列表[(周起始，周结束，单次节次), ...]"""
+    try:
+        result = []
+        # 分割多个时间段
+        for part in schedule_str.split(','):
+            # 分割周次和总节次
+            week_part, total_sec = part.split(':')
+            total_sections = int(total_sec)
+            
+            # 验证总节次是否匹配连排节次
+            if total_sections % duration_sections != 0:
+                raise ValueError(f"总节次{total_sections}无法被{duration_sections}整除")
+            
+            # 计算需要拆分的次数
+            times = total_sections // duration_sections
+            
+            # 解析周范围
+            week_start, week_end = map(int, week_part.split('-'))
+            
+            # 生成对应数量的记录
+            result.extend([(week_start, week_end, duration_sections)] * times)
+            
+        return result
+    except Exception as e:
+        raise ValueError(f"无效的开课周次格式: {schedule_str}") from e
+
+tasks = []
+for _, row in tasks_df.iterrows():
+    schedule_configs = parse_schedule(row['开课周次学时'], row['连排节次'])
+    for config in schedule_configs:
+        week_start, week_end, duration_sections = config
+        tasks.append({
+            'course_code': row['课程编号'],
+            'teacher_id': row['教师工号'],
+            'class_code': row['教学班编号'],
+            'priority': row['排课优先级'],
+            'class_size': row['教学班人数'],
+            'week_start': week_start,
+            'week_end': week_end,
+            'duration_sections': row['连排节次'],  # 根据需求文档使用连排节次字段
+            'classroom_type': row['指定教室类型'],
+            'classroom_code': None,
+            'weekday': None,
+            'start_section': None
+        })
 
 if __name__ == '__main__':
     # 初始化种群
