@@ -1,5 +1,7 @@
 import random
 import copy
+import numpy as np
+import math
 from collections import defaultdict
 
 class Gene:
@@ -18,13 +20,8 @@ class Gene:
                  weekday: int = None,
                  start_section: int = None):
 
-        # 为None的参数生成随机默认值（需满足容量约束）
         if classroom_code is None:
-            # 筛选符合类型且容量足够的教室
-            # 随机选择符合类型的教室（不检查容量）
-            valid_classrooms = [c for c in classrooms
-                              if c['type'] == classroom_type]
-            classroom_code = random.choice(valid_classrooms)['id']
+            classroom_code = random.choice(valid_classrooms[classroom_type])
             
         if weekday is None:
             weekday = random.randint(1, 7)  # 随机星期1-7
@@ -53,110 +50,125 @@ class Gene:
         
     def mutate(self):
         """随机改变基因的教室、星期和开始节次"""
-        # 随机选择符合类型的教室（不检查容量）
-        valid_classrooms = [c for c in classrooms
-                          if c['type'] == self.classroom_type]
-        self.classroom_code = random.choice(valid_classrooms)['id']
+        self.classroom_code = random.choice(valid_classrooms[self.classroom_type])
+
         self.weekday = random.randint(1, 7)
+
         if self.duration_sections == 2:
             self.start_section = random.choice([1,3,5,7])
         if self.duration_sections == 4:
             self.start_section = random.choice([1,3,5])
-            
+        
+class Calendar:
+    def __init__(self):
+        self.calendar = np.zeros((25,8,9), dtype=int)
+    def add(self, gene:Gene):
+        conflict = 0
+        for week in range(gene.week_start,gene.week_end+1):
+            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
+                if self.calendar[week, gene.weekday, section] >= 1:
+                    conflict += 1
+                self.calendar[week, gene.weekday, section] += 1
+        return conflict
+    
+    def sub(self, gene:Gene):
+        conflict = 0
+        for week in range(gene.week_start,gene.week_end+1):
+            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
+                if self.calendar[week, gene.weekday, section] > 1:
+                    conflict += -1
+                self.calendar[week, gene.weekday, section] += -1
+        return conflict
+
+    def calculate(self, gene:Gene, lim):
+        res = 0
+        for week in range(gene.week_start,gene.week_end+1):
+            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
+                value = self.calendar[week, gene.weekday, section]
+                if value > lim:
+                    res += value - lim
+        return res
+        
 class DNA:
     def __init__(self, tasks):
         self.genes = [Gene(**task) for task in tasks]
-        
-    def mutate(self):
-        """随机选择一个基因进行变异"""
-        random.choice(self.genes).mutate()
-        
-    def crossover(self, other):
-        """
-        与另一个DNA对象进行交叉
-        随机选择一个位置，将该位置的基因替换为另一个DNA对象的基因
-        """
-        if len(self.genes) != len(other.genes):
-            raise ValueError("两个DNA对象的基因长度必须相同")
-            
-        if self.genes:
-            crossover_point = random.randint(0, len(self.genes) - 1)
-            self.genes[crossover_point] = other.genes[crossover_point]
-    def check_conflict(self):
-        """计算时间冲突数量"""
-        self.conflict_count = 0
-        
+
         # 初始化三个日历字典
-        class_calendar = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
-        teacher_calendar = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
-        classroom_calendar = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
-
-        # 遍历所有基因
+        self.class_calendar = defaultdict(Calendar)
+        self.teacher_calendar = defaultdict(Calendar)
+        self.classroom_calendar = defaultdict(Calendar)
+        self.time_conflict = 0
+        self.average_conflict = 1
         for gene in self.genes:
-            # 获取基因的时间信息
-            week_range = range(gene.week_start, gene.week_end + 1)
-            sections = range(gene.start_section, gene.start_section + gene.duration_sections)
+            self.add(gene)
+
+    def add(self, gene:Gene):
+        self.time_conflict += self.class_calendar[gene.class_code].add(gene)
+        self.time_conflict += self.teacher_calendar[gene.teacher_id].add(gene)
+        self.time_conflict += self.classroom_calendar[gene.classroom_code].add(gene)
+    
+    def sub(self, gene:Gene):
+        self.time_conflict += self.class_calendar[gene.class_code].sub(gene)
+        self.time_conflict += self.teacher_calendar[gene.teacher_id].sub(gene)
+        self.time_conflict += self.classroom_calendar[gene.classroom_code].sub(gene)        
+
+    def calculate(self, gene:Gene):
+        conflict = 0
+        conflict += self.class_calendar[gene.class_code].calculate(gene, 0)
+        conflict += self.teacher_calendar[gene.teacher_id].calculate(gene, 0)
+        conflict += self.classroom_calendar[gene.classroom_code].calculate(gene, 0)
+
+        if classrooms_capacity[gene.classroom_code] < gene.class_size:
+            conflict += 10  # 容量不足视为硬约束冲突
+        if gene.weekday >= 6:  
+            conflict += 1  # 检查周末排课情况（周六=6，周日=7）
+
+        return conflict        
+
+    def mutate(self):
+        for i in range(len(self.genes)):
+            gene = self.genes[i]
+            self.sub(gene)
+            gene_mutated = copy.deepcopy(gene)
+            gene_best = copy.deepcopy(gene)
+
+            conflict = self.calculate(gene)
+
+            for j in range(1000):
+                if conflict < self.average_conflict*math.log10(j+7):
+                    break
+
+                gene_mutated.mutate()
+                conflict_mutated = self.calculate(gene_mutated)
+
+                if conflict > conflict_mutated:
+                    gene_best = copy.deepcopy(gene_mutated)
+                    conflict = conflict_mutated
             
-            # 更新三个日历
-            for week in week_range:
-                for section in sections:
-                    # 更新班级日历
-                    class_calendar[gene.class_code][week][gene.weekday][section] += 1
-                    # 更新教师日历
-                    teacher_calendar[gene.teacher_id][week][gene.weekday][section] += 1
-                    # 更新教室日历
-                    classroom_calendar[gene.classroom_code][week][gene.weekday][section] += 1
-
-        # 统计所有冲突（包括容量违规）
-        total_conflicts = 0
-        
-        # 检查教室容量约束
-        for gene in self.genes:
-            classroom = next(c for c in classrooms if c['id'] == gene.classroom_code)
-            if classroom['capacity'] < gene.class_size:
-                total_conflicts += 1  # 容量不足视为硬约束冲突
-        
-        # 遍历班级日历
-        for class_schedules in class_calendar.values():
-            for week_schedules in class_schedules.values():
-                for day_schedules in week_schedules.values():
-                    for count in day_schedules.values():
-                        if count > 1:
-                            total_conflicts += (count - 1)
-                            
-        # 遍历教师日历
-        for teacher_schedules in teacher_calendar.values():
-            for week_schedules in teacher_schedules.values():
-                for day_schedules in week_schedules.values():
-                    for count in day_schedules.values():
-                        if count > 1:
-                            total_conflicts += (count - 1)
-                            
-        # 遍历教室日历
-        for room_schedules in classroom_calendar.values():
-            for week_schedules in room_schedules.values():
-                for day_schedules in week_schedules.values():
-                    for count in day_schedules.values():
-                        if count > 1:
-                            total_conflicts += (count - 1)
-
-        self.conflict_count = total_conflicts
-    def check_soft_constraints(self):
-        total_conflicts = 0
-        # 检查周末排课情况（周六=6，周日=7）
-        for gene in self.genes:
-            if gene.weekday >= 6:  
-                total_conflicts += 1
-
-        self.soft_constraint_count = total_conflicts
+            self.add(gene_best)    
+            self.genes[i] = copy.deepcopy(gene_best)
 
     def calculate_fitness(self):
-        """计算并存储适应度值"""
-        self.check_conflict()
-        self.check_soft_constraints()
-        self.fitness = -(self.conflict_count * 1000 + self.soft_constraint_count)
+        self.room_conflict = 0
+        self.soft_conflict = 0
+
+        for gene in self.genes:
+            if classrooms_capacity[gene.classroom_code] < gene.class_size:
+                self.room_conflict += 1  # 容量不足视为硬约束冲突
+            if gene.weekday >= 6:  
+                self.soft_conflict += 1  # 检查周末排课情况（周六=6，周日=7）
+
+        self.conflict = self.time_conflict + self.room_conflict*10 + self.soft_conflict
+        self.average_conflict = self.conflict / len(self.genes)
+
+        return self.conflict
+
     def print(self,cnt):
-        print(f"第{cnt}次, 硬约束冲突={self.conflict_count}, 软约束冲突={self.soft_constraint_count}, weekday={self.genes[0].weekday}")
+        print(f"第{cnt}次, 时间约束冲突={self.time_conflict}, 教室约束冲突={self.room_conflict}, 软约束冲突={self.soft_conflict}")
+
+    def test(self):
+        pass
+
     
 
 
@@ -165,7 +177,7 @@ class DNA:
 class Population:
     """遗传算法种群类"""
     
-    def __init__(self, tasks, population_size=100, max_generations=100,
+    def __init__(self, tasks, population_size=1, max_generations=10,
                  selection_rate=0.7, mutation_rate=0.1):
         """
         参数:
@@ -176,6 +188,7 @@ class Population:
         mutation_rate: 变异概率
         """
         self.population = [DNA(tasks) for _ in range(population_size)]
+        self.population_size = population_size
         self.max_generations = max_generations
         self.selection_rate = selection_rate
         self.mutation_rate = mutation_rate
@@ -185,44 +198,22 @@ class Population:
     def evolve(self):
         """执行进化流程"""
         for generation in range(self.max_generations):
-            # 评估种群
-            for dna in self.population:
-                dna.calculate_fitness()
-
-            
-            # 选择前N%的个体并保留最优（深拷贝）
-            select_size = int(len(self.population) * self.selection_rate)
-            selected = [copy.deepcopy(dna) for dna in
-                       sorted(self.population, key=lambda dna: dna.fitness, reverse=True)[:select_size]]
-            # 更新最优个体为深拷贝
-            if self.best_dna is None or selected[0].fitness > self.best_dna.fitness:
-                self.best_dna = copy.deepcopy(selected[0])
-
 
             # 生成下一代
-            children = []
-            while len(children) < len(self.population) - select_size:
-                # 选择父母并进行单子代交叉
-                parent1, parent2 = random.sample(selected, 2)
+            children = copy.deepcopy(self.population)
+            for dna in children:
+                dna.mutate()
 
-                child = copy.deepcopy(parent1)
-                child.crossover(parent2)  # 使用DNA类自身的交叉方法
-                children.append(child)
-
+            self.population = self.population + children
+            self.population = sorted(self.population, key=lambda dna: dna.calculate_fitness())
+            self.population = self.population[:self.population_size]
             
-            # 合并新旧种群
-            self.population = copy.deepcopy(selected + children[:len(self.population)-select_size])
 
-            # 变异
-            for dna in self.population:
-                if random.random() < self.mutation_rate:
-                    dna.mutate()
-                    
+            if self.best_dna is None or self.population[0].conflict < self.best_dna.conflict:
+                self.best_dna = copy.deepcopy(self.population[0])
             # 输出当前最优
             self.best_dna.print(generation+1)
 
-            if self.best_dna.fitness == 0:
-                break
         
         return self.best_dna
 
@@ -240,11 +231,23 @@ classrooms = classrooms_df[['教室编号', '教室类型', '最大上课容纳�
     }
 ).to_dict('records')
 
+
+valid_classrooms = defaultdict(list)  # 使用defaultdict自动初始化空列表
+classrooms_capacity = {}
+
 # 确保数据格式正确
 for room in classrooms:
     room['capacity'] = int(room['capacity'])
+    valid_classrooms[room['type']].append(room['id'])  # 将教室ID添加到对应类型的列表
+    classrooms_capacity[room['id']] = room['capacity']
+
+# 验证每个教室类型都有可用教室
+for room_type, ids in valid_classrooms.items():
+    if not ids:
+        raise ValueError(f"教室类型'{room_type}'没有对应的教室，请检查教室信息表")
     if not all(key in room for key in ('id', 'type', 'capacity')):
         raise ValueError("教室信息.xlsx 文件格式错误，必须包含：教室编号、教室类型、最大上课容纳人数")
+
 
 # 从Excel文件读取教师信息
 teachers_df = pd.read_excel('教师信息.xlsx', engine='openpyxl')
@@ -314,7 +317,9 @@ if __name__ == '__main__':
     best_dna = population.evolve()
 
     # 输出最佳排课结果
+    """
     print("Best Schedule:")
     for gene in best_dna.genes:
         print(f"Course: {gene.course_code}, Teacher: {gene.teacher_id}, Class: {gene.class_code}, "
               f"Classroom: {gene.classroom_code}, Weekday: {gene.weekday}, Section: {gene.start_section}")
+    """
