@@ -125,7 +125,7 @@ class DNA:
 
         return conflict        
 
-    def mutate(self):
+    def mutate(self, time):
         for i in range(len(self.genes)):
             gene = self.genes[i]
             self.sub(gene)
@@ -134,7 +134,7 @@ class DNA:
 
             conflict = self.calculate(gene)
 
-            for j in range(1000):
+            for j in range(time):
                 if conflict < self.average_conflict*math.log10(j+7):
                     break
 
@@ -148,7 +148,7 @@ class DNA:
             self.add(gene_best)    
             self.genes[i] = copy.deepcopy(gene_best)
 
-    def calculate_fitness(self):
+    def calculate_conflict(self):
         self.room_conflict = 0
         self.soft_conflict = 0
 
@@ -197,25 +197,21 @@ class Population:
     
     def evolve(self):
         """执行进化流程"""
+        time=100
         for generation in range(self.max_generations):
-
             # 生成下一代
             children = copy.deepcopy(self.population)
             for dna in children:
-                dna.mutate()
+                dna.mutate(time)
 
             self.population = self.population + children
-            self.population = sorted(self.population, key=lambda dna: dna.calculate_fitness())
+            self.population = sorted(self.population, key=lambda dna: dna.calculate_conflict())
             self.population = self.population[:self.population_size]
-            
 
-            if self.best_dna is None or self.population[0].conflict < self.best_dna.conflict:
-                self.best_dna = copy.deepcopy(self.population[0])
-            # 输出当前最优
-            self.best_dna.print(generation+1)
+            self.population[0].print(generation+1)
 
         
-        return self.best_dna
+        return self.population[0]
 
 
 
@@ -323,3 +319,4 @@ if __name__ == '__main__':
         print(f"Course: {gene.course_code}, Teacher: {gene.teacher_id}, Class: {gene.class_code}, "
               f"Classroom: {gene.classroom_code}, Weekday: {gene.weekday}, Section: {gene.start_section}")
     """
+
