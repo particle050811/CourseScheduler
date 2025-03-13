@@ -61,33 +61,40 @@ class Gene:
         
 class Calendar:
     def __init__(self):
-        self.calendar = np.zeros((25,8,9), dtype=int)
+        self.calendar = np.zeros((25,7,4), dtype=int)
     def add(self, gene:Gene):
         conflict = 0
+        weekday = gene.weekday - 1
+        start = gene.start_section // 2
+        end = (gene.start_section+gene.duration_sections) // 2
         for week in range(gene.week_start,gene.week_end+1):
-            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
-                if self.calendar[week, gene.weekday, section] >= 1:
+            for section in range(start,end):
+                if self.calendar[week, weekday, section] >= 1:
                     conflict += 1
-                self.calendar[week, gene.weekday, section] += 1
+                self.calendar[week, weekday, section] += 1
         return conflict
     
     def sub(self, gene:Gene):
         conflict = 0
+        weekday = gene.weekday - 1
+        start = gene.start_section // 2
+        end = (gene.start_section+gene.duration_sections) // 2
         for week in range(gene.week_start,gene.week_end+1):
-            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
-                if self.calendar[week, gene.weekday, section] > 1:
+            for section in range(start,end):
+                if self.calendar[week, weekday, section] > 1:
                     conflict += -1
-                self.calendar[week, gene.weekday, section] += -1
+                self.calendar[week, weekday, section] += -1
         return conflict
 
-    def calculate(self, gene:Gene, lim):
-        res = 0
+    def calculate(self, gene:Gene):
+        conflict = 0
+        weekday = gene.weekday - 1
+        start = gene.start_section // 2
+        end = (gene.start_section+gene.duration_sections) // 2
         for week in range(gene.week_start,gene.week_end+1):
-            for section in range(gene.start_section,gene.start_section+gene.duration_sections):
-                value = self.calendar[week, gene.weekday, section]
-                if value > lim:
-                    res += value - lim
-        return res
+            for section in range(start,end):
+                conflict += self.calendar[week, weekday, section]
+        return conflict
         
 class DNA:
     def __init__(self, tasks):
@@ -114,9 +121,9 @@ class DNA:
 
     def calculate(self, gene:Gene):
         conflict = 0
-        conflict += self.class_calendar[gene.class_code].calculate(gene, 0)
-        conflict += self.teacher_calendar[gene.teacher_id].calculate(gene, 0)
-        conflict += self.classroom_calendar[gene.classroom_code].calculate(gene, 0)
+        conflict += self.class_calendar[gene.class_code].calculate(gene)
+        conflict += self.teacher_calendar[gene.teacher_id].calculate(gene)
+        conflict += self.classroom_calendar[gene.classroom_code].calculate(gene)
 
         if classrooms_capacity[gene.classroom_code] < gene.class_size:
             conflict += 10  # 容量不足视为硬约束冲突
@@ -135,7 +142,7 @@ class DNA:
             conflict = self.calculate(gene)
 
             for j in range(time):
-                if conflict < self.average_conflict*math.log10(j+7):
+                if conflict <= self.average_conflict*math.log10(j+7):
                     break
 
                 gene_mutated.mutate()
@@ -164,7 +171,8 @@ class DNA:
         return self.conflict
 
     def print(self,cnt):
-        print(f"第{cnt}次, 时间约束冲突={self.time_conflict}, 教室约束冲突={self.room_conflict}, 软约束冲突={self.soft_conflict}")
+        print(  f"第{cnt}次, 时间约束冲突={self.time_conflict}, "
+                f"教室约束冲突={self.room_conflict}, 软约束冲突={self.soft_conflict}")
 
     def test(self):
         pass
@@ -197,20 +205,16 @@ class Population:
     
     def evolve(self):
         """执行进化流程"""
-        time=100
+        time=1000
         for generation in range(self.max_generations):
-            # 生成下一代
-            children = copy.deepcopy(self.population)
-            for dna in children:
+
+            for dna in self.population:
                 dna.mutate(time)
 
-            self.population = self.population + children
             self.population = sorted(self.population, key=lambda dna: dna.calculate_conflict())
-            self.population = self.population[:self.population_size]
 
             self.population[0].print(generation+1)
 
-        
         return self.population[0]
 
 
@@ -255,7 +259,7 @@ teachers = teachers_df[['工号', '姓名']].rename(
 ).to_dict('records')
 
 # 从排课任务.xlsx读取任务数据
-tasks_df = pd.read_excel('排课任务.xlsx', engine='openpyxl')
+tasks_df = pd.read_excel('排课任务.xlsx', engine='openpyxl', dtype={'教师工号': str})
 
 def parse_schedule(schedule_str, duration_sections):
     """解析多时间段开课周次格式（示例：'5-8:6,13-16:2'）
@@ -295,7 +299,7 @@ for _, row in tasks_df.iterrows():
             'teacher_id': row['教师工号'],
             'class_code': row['教学班编号'],
             'priority': row['排课优先级'],
-            'class_size': row['教学班人数'],
+            'class_size': 50,
             'week_start': week_start,
             'week_end': week_end,
             'duration_sections': row['连排节次'],  # 根据需求文档使用连排节次字段
@@ -305,6 +309,12 @@ for _, row in tasks_df.iterrows():
             'start_section': None
         })
 
+"""
+# 根据连排节次从大到小排序任务列表
+tasks = sorted(tasks, key=lambda x: x['duration_sections'], reverse=True)
+"""
+
+
 if __name__ == '__main__':
     # 初始化种群
     population = Population(tasks)
@@ -313,10 +323,10 @@ if __name__ == '__main__':
     best_dna = population.evolve()
 
     # 输出最佳排课结果
-    """
+
     print("Best Schedule:")
     for gene in best_dna.genes:
         print(f"Course: {gene.course_code}, Teacher: {gene.teacher_id}, Class: {gene.class_code}, "
               f"Classroom: {gene.classroom_code}, Weekday: {gene.weekday}, Section: {gene.start_section}")
-    """
+
 
