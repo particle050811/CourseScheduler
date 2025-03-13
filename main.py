@@ -185,7 +185,7 @@ class DNA:
 class Population:
     """遗传算法种群类"""
     
-    def __init__(self, tasks, population_size=1, max_generations=10,
+    def __init__(self, tasks, population_size=1, max_generations=5,
                  selection_rate=0.7, mutation_rate=0.1):
         """
         参数:
@@ -218,115 +218,89 @@ class Population:
         return self.population[0]
 
 
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
-import pandas as pd
+app = Flask(__name__)
+CORS(app)
 
-# 从Excel文件读取教室信息
-classrooms_df = pd.read_excel('教室信息.xlsx', engine='openpyxl')
-classrooms = classrooms_df[['教室编号', '教室类型', '最大上课容纳人数']].rename(
-    columns={
-        '教室编号': 'id',
-        '教室类型': 'type',
-        '最大上课容纳人数': 'capacity'
-    }
-).to_dict('records')
-
-
-valid_classrooms = defaultdict(list)  # 使用defaultdict自动初始化空列表
-classrooms_capacity = {}
-
-# 确保数据格式正确
-for room in classrooms:
-    room['capacity'] = int(room['capacity'])
-    valid_classrooms[room['type']].append(room['id'])  # 将教室ID添加到对应类型的列表
-    classrooms_capacity[room['id']] = room['capacity']
-
-# 验证每个教室类型都有可用教室
-for room_type, ids in valid_classrooms.items():
-    if not ids:
-        raise ValueError(f"教室类型'{room_type}'没有对应的教室，请检查教室信息表")
-    if not all(key in room for key in ('id', 'type', 'capacity')):
-        raise ValueError("教室信息.xlsx 文件格式错误，必须包含：教室编号、教室类型、最大上课容纳人数")
-
-
-# 从Excel文件读取教师信息
-teachers_df = pd.read_excel('教师信息.xlsx', engine='openpyxl')
-teachers = teachers_df[['工号', '姓名']].rename(
-    columns={
-        '工号': 'id',
-        '姓名': 'name'
-    }
-).to_dict('records')
-
-# 从排课任务.xlsx读取任务数据
-tasks_df = pd.read_excel('排课任务.xlsx', engine='openpyxl', dtype={'教师工号': str})
-
-def parse_schedule(schedule_str, duration_sections):
-    """解析多时间段开课周次格式（示例：'5-8:6,13-16:2'）
-    返回元组列表[(周起始，周结束，单次节次), ...]"""
+@app.route('/arrange', methods=['POST'])
+def arrange_schedule():
     try:
-        result = []
-        # 分割多个时间段
-        for part in schedule_str.split(','):
-            # 分割周次和总节次
-            week_part, total_sec = part.split(':')
-            total_sections = int(total_sec)
-            
-            # 验证总节次是否匹配连排节次
-            if total_sections % duration_sections != 0:
-                raise ValueError(f"总节次{total_sections}无法被{duration_sections}整除")
-            
-            # 计算需要拆分的次数
-            times = total_sections // duration_sections
-            
-            # 解析周范围
-            week_start, week_end = map(int, week_part.split('-'))
-            
-            # 生成对应数量的记录
-            result.extend([(week_start, week_end, duration_sections)] * times)
-            
-        return result
-    except Exception as e:
-        raise ValueError(f"无效的开课周次格式: {schedule_str}") from e
+        data = request.get_json()
+        
+        # 验证必要字段
+        required_fields = ['tasks', 'classrooms', 'teachers']
+        if not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400
 
-tasks = []
-for _, row in tasks_df.iterrows():
-    schedule_configs = parse_schedule(row['开课周次学时'], row['连排节次'])
-    for config in schedule_configs:
-        week_start, week_end, duration_sections = config
-        tasks.append({
-            'course_code': row['课程编号'],
-            'teacher_id': row['教师工号'],
-            'class_code': row['教学班编号'],
-            'priority': row['排课优先级'],
-            'class_size': 50,
-            'week_start': week_start,
-            'week_end': week_end,
-            'duration_sections': row['连排节次'],  # 根据需求文档使用连排节次字段
-            'classroom_type': row['指定教室类型'],
-            'classroom_code': None,
-            'weekday': None,
-            'start_section': None
+        # 处理教室数据
+        global valid_classrooms, classrooms_capacity
+        valid_classrooms = defaultdict(list)
+        classrooms_capacity = {}
+        for room in data['classrooms']:
+            if not all(key in room for key in ['id', 'type', 'capacity']):
+                return jsonify({'error': 'Invalid classroom format'}), 400
+            valid_classrooms[room['type']].append(room['id'])
+            classrooms_capacity[room['id']] = int(room['capacity'])
+
+        # 处理任务数据
+        tasks = []
+        for task in data['tasks']:
+            required_task_fields = ['course_code', 'teacher_id', 'class_code', 'priority', 
+                                   'class_size', 'week_start', 'week_end', 'duration_sections', 'classroom_type']
+            if not all(field in task for field in required_task_fields):
+                return jsonify({'error': 'Invalid task format'}), 400
+            
+            tasks.append({
+                'course_code': task['course_code'],
+                'teacher_id': task['teacher_id'],
+                'class_code': task['class_code'],
+                'priority': task['priority'],
+                'class_size': task['class_size'],
+                'week_start': task['week_start'],
+                'week_end': task['week_end'],
+                'duration_sections': task['duration_sections'],
+                'classroom_type': task['classroom_type'],
+                'classroom_code': task.get('classroom_code'),
+                'weekday': task.get('weekday'),
+                'start_section': task.get('start_section')
+            })
+
+        # 运行遗传算法
+        population = Population(tasks)
+        best_dna = population.evolve()
+
+        # 格式化结果
+        result = [{
+            'course_code': gene.course_code,
+            'teacher_id': gene.teacher_id,
+            'class_code': gene.class_code,
+            'priority': gene.priority,
+            'class_size': gene.class_size,
+            'week_start': gene.week_start,
+            'week_end': gene.week_end,
+            'duration_sections': gene.duration_sections,
+            'classroom_type': gene.classroom_type,
+            'classroom': gene.classroom_code,
+            'weekday': gene.weekday,
+            'start_section': gene.start_section
+        } for gene in best_dna.genes]
+
+        return jsonify({
+            'schedule': result,
+            'conflicts': {
+                'time_conflict': best_dna.time_conflict,
+                'room_conflict': best_dna.room_conflict,
+                'soft_conflict': best_dna.soft_conflict
+            }
         })
 
-"""
-# 根据连排节次从大到小排序任务列表
-tasks = sorted(tasks, key=lambda x: x['duration_sections'], reverse=True)
-"""
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
-    # 初始化种群
-    population = Population(tasks)
-
-    # 执行进化流程
-    best_dna = population.evolve()
-
-    # 输出最佳排课结果
-
-    print("Best Schedule:")
-    for gene in best_dna.genes:
-        print(f"Course: {gene.course_code}, Teacher: {gene.teacher_id}, Class: {gene.class_code}, "
-              f"Classroom: {gene.classroom_code}, Weekday: {gene.weekday}, Section: {gene.start_section}")
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
 
